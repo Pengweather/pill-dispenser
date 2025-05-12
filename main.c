@@ -40,13 +40,64 @@ void lp_clk_config(const bool use_output) {
     CSCTL2    =  SELA__VLOCLK | SELS__DCOCLK | SELM__DCOCLK;  //
     CSCTL3    =  DIVA__1 | DIVS__1 | DIVM__1;                 // Set all dividers
     CSCTL0_H  =  0;                                           // Lock CS registers back.
+}
 
-    // The SMCLK can be probed from this pin.
+static inline
+void ccb_uc_adc_meas(void) {
+    ADC12CTL0 |= ADC12SC;
+}
 
-    if (use_output == true) {
-        P3DIR   |= LP_SMCLK;
-        P3SEL1  |= LP_SMCLK;                         // Output SMCLK
-    }
+#define UC_ADC_1    BIT0    // Port 3
+#define UC_ADC_2    BIT0    // Port 4
+#define UC_ADC_3    BIT1    // Port 4
+#define UC_ADC_4    BIT2    // Port 4
+#define UC_ADC_5    BIT3    // Port 4
+
+static inline
+void ccb_uc_adc_config(void) {
+    while ((REFCTL0 & REFGENBUSY) != 0)
+        __no_operation();
+
+    REFCTL0 |= REFVSEL0 + REFVSEL1 + REFON;
+
+    // First set the pins to the appropriate selected functionality.
+
+    P3SEL0 |=  UC_ADC_1;
+    P3SEL1 |=  UC_ADC_1;
+
+    P4SEL0 |=  UC_ADC_2 | UC_ADC_3 | UC_ADC_4 | UC_ADC_5;
+    P4SEL1 |=  UC_ADC_2 | UC_ADC_3 | UC_ADC_4 | UC_ADC_5;
+
+    // Configure the ADC registers to permit a single-sampling and multiple acquisition.
+    // We are relying on 8 ADC12CLK cycles for ADC12MEM0 to ADC12MEM7.
+
+    ADC12CTL0  = ~ADC12ENC;
+    ADC12CTL0  =  ADC12SHT0_1   | ADC12ON | ADC12MSC;
+    ADC12CTL1  =  ADC12CONSEQ_1 | ADC12SHP;
+    ADC12CTL2  =  ADC12RES_2;
+
+    // Set the memory location for saving the ADC values. Within ADC12MCTL0 and ADC12MCTL1
+
+    ADC12MCTL0 |=  ADC12INCH_12  | ADC12VRSEL0;
+    ADC12MCTL0 &= ~ADC12DIF;
+
+    ADC12MCTL1 |=  ADC12INCH_8  | ADC12VRSEL0;
+    ADC12MCTL1 &= ~ADC12DIF;
+
+    ADC12MCTL2 |=  ADC12INCH_9  | ADC12VRSEL0;
+    ADC12MCTL2 &= ~ADC12DIF;
+
+    ADC12MCTL3 |=  ADC12INCH_10 | ADC12VRSEL0;
+    ADC12MCTL3 &= ~ADC12DIF;
+
+    ADC12MCTL4 |=  ADC12INCH_11 | ADC12VRSEL0;
+    ADC12MCTL4 &= ~ADC12DIF;
+    ADC12MCTL4 |=  ADC12EOS;     // Specify the end of sequence
+
+    // Interrupt enable
+
+    ADC12IER0  = ADC12IE4;
+    ADC12CTL0 |= ADC12ENC;
 }
 
 // Configure SPI
@@ -80,72 +131,91 @@ void lp_spi_config(void) {
     __delay_cycles(10000);
 }
 
-#define LP_SPI_MOSI    BIT0    // Port 2
-#define LP_SPI_MISO    BIT1    // Port 2
-#define LP_SPI_CS      BIT4    // Port 1
-#define LP_SPI_SCLK    BIT5    // Port 1
+#define SPI_MOSI        BIT0    // Port 2
+#define SPI_MISO        BIT1    // Port 2
+#define SPI_CS          BIT4    // Port 1
+#define SPI_SCLK        BIT5    // Port 1
+#define SPI_EN          BIT5    // Port 3
+#define SPI_MAX_BYTES   3
 
-#define LP_SPI_MAX_BYTES   16
-
-enum lp_spi_mode
+enum spi_mode
 {
-    LP_SPI_IDLE_MODE,
-    LP_SPI_TX_REG_ADDRESS_MODE,
-    LP_SPI_RX_REG_ADDRESS_MODE,
-    LP_SPI_TX_DATA_MODE,
-    LP_SPI_RX_DATA_MODE,
-    LP_SPI_TIMEOUT_MODE
+    SPI_IDLE_MODE,
+    SPI_TX_REG_ADDRESS_MODE,
+    SPI_RX_REG_ADDRESS_MODE,
+    SPI_TX_DATA_MODE,
+    SPI_RX_DATA_MODE,
+    SPI_TIMEOUT_MODE
 };
 
-uint8_t lp_spi_rx_count  = 0,  lp_spi_tx_count  = 0;
-uint8_t lp_spi_rx_offset = 0,  lp_spi_tx_offset = 0;
-uint8_t lp_spi_receive[LP_SPI_MAX_BYTES] = {0}, lp_spi_transmit[LP_SPI_MAX_BYTES] = {0};
+uint32_t spi_rx_count  = 0, spi_tx_count  = 0,
+         spi_rx_offset = 0, spi_tx_offset = 0;
+uint32_t spi_rx_buf[SPI_MAX_BYTES] = {0}, spi_tx_buf[SPI_MAX_BYTES] = {0};
 
-enum lp_spi_mode lp_spi_mode = LP_SPI_IDLE_MODE;
-
-static inline
-void lp_spi_write(const uint8_t reg_addr, const uint8_t bytes) {
-    lp_spi_mode = LP_SPI_TX_REG_ADDRESS_MODE;
-    lp_spi_tx_offset = bytes;
-    lp_spi_rx_count  = 0;
-
-    if (bytes < LP_SPI_MAX_BYTES) {
-        lp_spi_tx_count = bytes;
-    }
-    else {
-        lp_spi_tx_count = LP_SPI_MAX_BYTES;
-    }
-
-    uint8_t reg_w = reg_addr;
-    P1OUT  &= ~LP_SPI_CS;
-
-    while (!(UCA0IFG & UCTXIFG));           // I don't like using this. Find alternative?
-    UCA0TXBUF = reg_w;
-
-    __bis_SR_register(CPUOFF + GIE);        // Enter LPM0 w/interrupts enabled
-    P1OUT  |=  LP_SPI_CS;
-}
+enum spi_mode spi_mode = SPI_IDLE_MODE;
 
 static inline
-void lp_spi_read(const uint8_t reg_addr, const uint8_t bytes) {
-    lp_spi_mode = LP_SPI_TX_REG_ADDRESS_MODE;
-    lp_spi_rx_offset = bytes;
-    lp_spi_tx_count  = 0;
+void spi_w(const uint8_t reg_addr, const uint8_t bytes) {
+    spi_mode = SPI_TX_REG_ADDRESS_MODE;
+    spi_tx_offset = bytes;
+    spi_rx_count  = 0;
 
-    if (bytes < LP_SPI_MAX_BYTES) {
-        lp_spi_rx_count = bytes;
-    }
-    else {
-        lp_spi_rx_count = LP_SPI_MAX_BYTES;
-    }
+    if (bytes < SPI_MAX_BYTES)
+        spi_tx_count = bytes;
+    else
+        spi_tx_count = SPI_MAX_BYTES;
 
-    P1OUT  &= ~LP_SPI_CS;
+    P1OUT &= ~SPI_CS;
 
     while (!(UCA0IFG & UCTXIFG));           // I don't like using this. Find alternative?
     UCA0TXBUF = reg_addr;
 
     __bis_SR_register(CPUOFF + GIE);        // Enter LPM0 w/interrupts enabled
-    P1OUT  |=  LP_SPI_CS;
+    P1OUT |=  SPI_CS;
+}
+
+static inline
+void spi_r(const uint8_t reg_addr, const uint8_t bytes) {
+    spi_mode = SPI_TX_REG_ADDRESS_MODE;
+    spi_rx_offset = bytes;
+    spi_tx_count  = 0;
+
+    if (bytes < SPI_MAX_BYTES)
+        spi_rx_count = bytes;
+    else
+        spi_rx_count = SPI_MAX_BYTES;
+
+    P1OUT &= ~SPI_CS;
+
+    while (!(UCA0IFG & UCTXIFG));           // I don't like using this. Find alternative?
+    UCA0TXBUF = reg_addr;
+
+    __bis_SR_register(CPUOFF + GIE);        // Enter LPM0 w/interrupts enabled
+    P1OUT |=  SPI_CS;
+}
+
+static inline
+void spi_config(void) {
+    // Chip select and the enable will be controlled by the MSP430.
+
+    P1DIR  |=  SPI_CS;
+    P3DIR  |=  SPI_EN;
+    P3OUT  |=  SPI_EN;
+
+    // Initialize the serial communication here.
+
+    P1SEL0 &= ~SPI_SCLK;
+    P1SEL1 |=  SPI_SCLK;
+    P2SEL0 &= ~SPI_MOSI;
+    P2SEL0 &= ~SPI_MISO;
+    P2SEL1 |=  SPI_MOSI | SPI_MISO;
+
+    UCA0CTLW0  =  UCSWRST;
+    UCA0CTLW0 |=  UCMSB | UCSYNC | UCMST | UCCKPH | UCSSEL__SMCLK;
+    UCA0CTLW0 &= ~UCSWRST;
+    UCA0IE    |=  UCRXIE;
+
+    __delay_cycles(5000);
 }
 
 #define LP_I2C_SDA  BIT6    // Port 1
