@@ -5,33 +5,33 @@
 
 // LEDs that can be used for debugging.
 
-#define LP_LED         BIT0    // Port 1
-#define LP_SWITCH      BIT1    // Port 1
+#define LED         BIT0    // Port 1
+#define SWITCH      BIT1    // Port 1
 
 static inline
-void lp_switch_config(void) {
-    P1DIR &= ~LP_SWITCH;
-    P1OUT |=  LP_SWITCH;
-    P1REN |=  LP_SWITCH;
-    P1IES |=  LP_SWITCH;
-    P1IE  |=  LP_SWITCH;
+void sw_config(void) {
+    P1DIR &= ~SWITCH;
+    P1OUT |=  SWITCH;
+    P1REN |=  SWITCH;
+    P1IES |=  SWITCH;
+    P1IE  |=  SWITCH;
     P1IFG  =  0;
 }
 
 static inline
-void lp_led_config(void) {
-    P1DIR |=  LP_LED;
-    P1IE  &= ~LP_LED;
+void led_config(void) {
+    P1DIR |=  LED;
+    P1IE  &= ~LED;
     P1IFG  =  0;
 }
 
 // Configure clock functions.
 
-#define LP_SMCLK       BIT4    // Port 3
+#define SMCLK       BIT4    // Port 3
 
 static inline
-void lp_clk_config(const bool use_output) {
-    // The SMCLK will be used for both the LP_SPI communication and the timers.
+void clk_config(const bool use_output) {
+    // The SMCLK will be used for both the SPI communication and the timers.
     // Due to the FRAM, we need to add in a wait condition so that higher frequencies can be used.
 
     CSCTL0_H  =  CSKEY >> 8;                                  // Unlock CS registers for modification.
@@ -98,6 +98,27 @@ void adc_config(void) {
 
     ADC12IER0  = ADC12IE4;
     ADC12CTL0 |= ADC12ENC;
+}
+
+#define LOOP_TICK_DURATION  62500
+#define CHECKPOINT1         10000
+#define CHECKPOINT2          5000
+
+static inline
+void ccb_uc_tx_timer_config(void) {
+    TA0CTL    =  TASSEL1 | TAIE | ID1 | ID0 ; // Use the ACLK w/ a clock divider of 8.
+    TA0CCR0   =  LOOP_TICK_DURATION;
+    TA0CCR1   =  CHECKPOINT1;
+    TA0CCR2   =  CHECKPOINT2;
+
+    TA0CCTL1 |=  CCIE;
+    TA0CCTL1 &= ~CCIFG;
+
+    TA0CCTL2 |=  CCIE;
+    TA0CCTL2 &= ~CCIFG;
+
+    TA0CTL   &= ~TAIFG;
+    TA0CTL   |=  MC0;
 }
 
 // Configure SPI
@@ -189,97 +210,91 @@ void spi_config(void) {
     __delay_cycles(5000);
 }
 
-#define LP_I2C_SDA  BIT6    // Port 1
-#define LP_I2C_SCL  BIT7    // Port 1
+#define I2C_SDA  BIT6    // Port 1
+#define I2C_SCL  BIT7    // Port 1
 
-// Configure I2C
+#define I2C_MAX_BYTES   4
 
-static inline
-void lp_i2c_config(void) {
-    P1SEL1    |=  LP_I2C_SDA;
-    P1SEL0    &= ~LP_I2C_SDA;
+#define I2C_STAT_IDLE             0
+#define I2C_STAT_WRITE            1
+#define I2C_STAT_READ             2
 
-    P1SEL1    |=  LP_I2C_SCL;
-    P1SEL0    &= ~LP_I2C_SCL;
+uint8_t  i2c_addr = 0,
+         i2c_stat = I2C_STAT_IDLE;
 
-    __no_operation();
-
-    UCB0CTL1  |=  UCSWRST;
-    UCB0CTLW0 |=  UCMODE_3 + UCSYNC + UCMST + UCSSEL__SMCLK; // Using the SMCLK, and transmit.
-    UCB0BRW    =  40;
-    UCB0CTL1  &= ~UCSWRST;                                   // eUSCI_B in operational state
-
-    __delay_cycles(1000);
-}
-
-#define LP_I2C_MAX_BYTES    16
-
-uint8_t lp_i2c_rx_count  = 0,  lp_i2c_tx_count  = 0;
-uint8_t lp_i2c_rx_offset = 0,  lp_i2c_tx_offset = 0;
-uint8_t lp_i2c_addr  = 0;
-uint8_t lp_i2c_receive[LP_I2C_MAX_BYTES] = {0}, lp_i2c_transmit[LP_I2C_MAX_BYTES] = {0};
+uint32_t i2c_rx_count  = 0, i2c_tx_count  = 0,
+         i2c_rx_offset = 0, i2c_tx_offset = 0;
+uint32_t i2c_rx_buf[I2C_MAX_BYTES] = {0},
+         i2c_tx_buf[I2C_MAX_BYTES] = {0};
 
 static inline
-void lp_i2c_write(const uint8_t addr, const uint8_t bytes) {
+void i2c_r(const uint8_t addr, const uint8_t bytes) {
     if (bytes > 0) {
-        lp_i2c_addr  = addr;
-        lp_i2c_rx_count  = 0;
-        lp_i2c_tx_offset = bytes;
+        i2c_stat = I2C_STAT_READ;
+        i2c_addr = addr;
+        i2c_tx_count = 0;
+        i2c_rx_offset = bytes;
 
-        if (bytes < LP_I2C_MAX_BYTES) {
-            lp_i2c_tx_count = bytes;
-        }
-        else {
-            lp_i2c_tx_count = LP_I2C_MAX_BYTES;
-        }
-
-        UCB0IFG   &=  0;
-        UCB0IE    &= ~UCRXIE0;
-        UCB0IE    |=  UCTXIE0;
-        UCB0I2CSA  =  addr;
-        UCB0CTLW0 |=  UCTR;
-        UCB0CTLW0 |=  UCTXSTT;
-
-        __bis_SR_register(LPM0_bits + GIE);
-        __delay_cycles(500);
-    }
-}
-
-static inline
-void lp_i2c_read(const uint8_t addr, uint8_t *data, const uint8_t bytes) {
-    if (bytes > 0) {
-        lp_i2c_addr  = addr;
-        lp_i2c_tx_count  = 0;
-        lp_i2c_rx_offset = bytes;
-
-        if (bytes < LP_I2C_MAX_BYTES) {
-            memset(data, 0, bytes);
-            lp_i2c_rx_count =  bytes;
-        }
-        else {
-            memset(data, 0, LP_I2C_MAX_BYTES);
-            lp_i2c_rx_count =  LP_I2C_MAX_BYTES;
-        }
+        if (bytes < I2C_MAX_BYTES)
+            i2c_rx_count = bytes;
+        else
+            i2c_rx_count = I2C_MAX_BYTES;
 
         UCB0IFG   &=  0;
         UCB0IE    &= ~UCTXIE0;
-        UCB0IE    |=  UCRXIE0 | UCNACKIE;
+        UCB0IE    |=  UCRXIE0 | UCNACKIE | UCSTPIE;
         UCB0I2CSA  =  addr;
         UCB0CTLW0 &= ~UCTR;
 
-        if (lp_i2c_rx_count == 1) {
-            UCB0CTLW0 |=  UCTXSTT;
-            UCB0CTLW0 |=  UCTXSTP;
-
+        if (i2c_rx_count == 1) {
+            UCB0CTLW0 |= UCTXSTT | UCTXSTP;
             __bis_SR_register(LPM0_bits + GIE);
         }
         else {
-            UCB0CTLW0 |=  UCTXSTT;
+            UCB0CTLW0 |= UCTXSTT;
             __bis_SR_register(LPM0_bits + GIE);
         }
 
-        __delay_cycles(500);
+        __delay_cycles(7500);
     }
+}
+
+static inline
+void i2c_w(const uint8_t addr, const uint8_t bytes) {
+    if (bytes > 0) {
+        i2c_stat = I2C_STAT_WRITE;
+        i2c_addr = addr;
+        i2c_rx_count = 0;
+        i2c_tx_offset = bytes;
+
+        if (bytes < I2C_MAX_BYTES)
+            i2c_tx_count = bytes;
+        else
+            i2c_tx_count = I2C_MAX_BYTES;
+
+        UCB0IFG   &=  0;
+        UCB0IE    &= ~UCRXIE0;
+        UCB0IE    |=  UCTXIE0 | UCNACKIE | UCSTPIE;
+        UCB0I2CSA  =  addr;
+        UCB0CTLW0 |=  UCTR | UCTXSTT;
+
+        __bis_SR_register(LPM0_bits + GIE);
+        __delay_cycles(7500);
+    }
+}
+
+static inline
+void i2c_config(void) {
+    P1SEL1    |=  I2C_SDA;
+    P1SEL0    &= ~I2C_SDA;
+
+    P1SEL1    |=  I2C_SCL;
+    P1SEL0    &= ~I2C_SCL;
+
+    UCB0CTL1  |=  UCSWRST;
+    UCB0CTLW0 |=  UCMODE_3 | UCSYNC | UCMST | UCSSEL__SMCLK; // Using the SMCLK, and transmit.
+    UCB0BRW    =  30;                                        // SMCLK will generate a clock of 12 MHz, which will be divided by 30 to yield 400 KHz
+    UCB0CTL1  &= ~UCSWRST;                                   // eUSCI_B in operational state
 }
 
 #define BME280_SLAVE_ADDR    0x76
@@ -287,61 +302,13 @@ void lp_i2c_read(const uint8_t addr, uint8_t *data, const uint8_t bytes) {
 void main(void) {
     WDTCTL = WDTPW | WDTHOLD;
     PM5CTL0 &= ~LOCKLPM5;
-
-    lp_clk_config(true);
-    lp_switch_config();
-    lp_led_config();
-    lp_i2c_config();
-
-    // Read the ID.
-
-    lp_i2c_transmit[0] = 0xD0;
-    lp_i2c_write(BME280_SLAVE_ADDR, 1);
-    lp_i2c_read(BME280_SLAVE_ADDR, lp_i2c_receive, 1);
-
-    // Configure the state registers.
-
-    lp_i2c_transmit[0] = 0xF5;
-    lp_i2c_transmit[1] = 0x02;
-
-    lp_i2c_write(BME280_SLAVE_ADDR, 2);
-    lp_i2c_read(BME280_SLAVE_ADDR, lp_i2c_receive, 1);
-
-    lp_i2c_transmit[0] = 0xF4;
-    lp_i2c_transmit[1] = 0x24;
-
-    lp_i2c_write(BME280_SLAVE_ADDR, 2);
-    lp_i2c_read(BME280_SLAVE_ADDR, lp_i2c_receive, 1);
-
-    // Read temperature, 3 bytes at a time.
-    lp_i2c_transmit[1] |= 0x01;
-    lp_i2c_write(BME280_SLAVE_ADDR, 2);
-
-    lp_i2c_transmit[0] = 0xFA;
-    lp_i2c_write(BME280_SLAVE_ADDR, 1);
-    lp_i2c_read(BME280_SLAVE_ADDR, lp_i2c_receive, 3);
-
-    // Read the ID.
-
-    lp_i2c_transmit[0] = 0xD0;
-    lp_i2c_write(BME280_SLAVE_ADDR, 1);
-    lp_i2c_read(BME280_SLAVE_ADDR, lp_i2c_receive, 1);
-
-    // Read the ID.
-
-    lp_i2c_transmit[0] = 0xD0;
-    lp_i2c_write(BME280_SLAVE_ADDR, 1);
-    lp_i2c_read(BME280_SLAVE_ADDR, lp_i2c_receive, 1);
-
-    __no_operation();
-    __bis_SR_register(LPM0_bits + GIE);
 }
 
 #pragma vector=PORT1_VECTOR
 __interrupt void PORT1_ISR(void) {
     switch(__even_in_range(P1IV, P1IV_P1IFG7)) {
             case P1IV_P1IFG1:
-                P1OUT |= LP_LED;
+                P1OUT |= LED;
                 break;
             default:
                 break;
@@ -351,56 +318,106 @@ __interrupt void PORT1_ISR(void) {
     return;
 }
 
+#pragma vector=TIMER0_A1_VECTOR
+__interrupt void ta0_ccr1_isr(void) {
+    switch (__even_in_range(TA0IV, TA0IV_TAIFG)) {
+        case TA0IV_NONE:
+            break;
+        case TA0IV_TACCR1: {
+            if ((CSCTL5 & HFXTOFFG) != 0) {
+                CSCTL0_H =  CSKEY >> 8;
+                CSCTL5  &= ~LFXTOFFG & ~HFXTOFFG; // Clear XT1 and XT2 fault flag
+                SFRIFG1 &= ~OFIFG;
+                CSCTL0_H =  0;
+            }
+
+            break;
+        }
+        case TA0IV_TACCR2: {
+            if ((CSCTL5 & HFXTOFFG) != 0) {
+                CSCTL0_H =  CSKEY >> 8;
+                CSCTL5  &= ~LFXTOFFG & ~HFXTOFFG; // Clear XT1 and XT2 fault flag
+                SFRIFG1 &= ~OFIFG;
+                CSCTL0_H =  0;
+            }
+
+        }
+        case TA0IV_TAIFG:
+            break;
+        default:
+            break;
+    }
+}
+
+long num[5] = {0};
+
+#pragma vector = ADC12_VECTOR
+__interrupt void ADC12_ISR(void) {
+    switch(__even_in_range(ADC12IV, ADC12IV_ADC12RDYIFG)) {
+        case ADC12IV_ADC12IFG1:
+            break;
+        case ADC12IV_ADC12IFG4:
+            num[0] = ADC12MEM0;
+            num[1] = ADC12MEM1;
+            num[2] = ADC12MEM2;
+            num[3] = ADC12MEM3;
+            num[4] = ADC12MEM4;
+            break;
+        default:
+            break;
+    }
+}
+
 #pragma vector=USCI_A0_VECTOR
 __interrupt void USCI_A0_ISR(void) {
-    uint8_t uca0_rx_val = 0;
+    uint8_t uca0_spi_rx_val = 0;
 
     switch(__even_in_range(UCA0IV, USCI_SPI_UCTXIFG)) {
         case USCI_NONE:
             break;
         case USCI_SPI_UCRXIFG:
-            uca0_rx_val = UCA0RXBUF;
+            uca0_spi_rx_val = UCA0RXBUF;
             UCA0IFG &= ~UCRXIFG;
 
-            if (lp_spi_mode == LP_SPI_TX_REG_ADDRESS_MODE) {
-                if (lp_spi_rx_count > 0) {
-                    lp_spi_mode = LP_SPI_RX_DATA_MODE;
+            if (spi_mode == SPI_TX_REG_ADDRESS_MODE) {
+                if (spi_rx_count > 0) {
+                    spi_mode = SPI_RX_DATA_MODE;
                     __delay_cycles(1000);
 
                     while (!(UCA0IFG & UCTXIFG));           // I don't like using this. Find alternative?
                     UCA0TXBUF = 0xFF;
                 }
                 else {
-                    lp_spi_mode = LP_SPI_TX_DATA_MODE;
+                    spi_mode = SPI_TX_DATA_MODE;
 
                     while (!(UCA0IFG & UCTXIFG));           // I don't like using this. Find alternative?
-                    UCA0TXBUF = lp_spi_transmit[lp_spi_tx_offset - lp_spi_tx_count];
+                    UCA0TXBUF = spi_tx_buf[spi_tx_offset - spi_tx_count];
 
-                    lp_spi_tx_count--;
+                    spi_tx_count--;
                 }
             }
             else
-            if (lp_spi_mode == LP_SPI_TX_DATA_MODE) {
-                if (lp_spi_tx_count > 0) {
+            if (spi_mode == SPI_TX_DATA_MODE) {
+                if (spi_tx_count > 0) {
                     while (!(UCA0IFG & UCTXIFG));           // I don't like using this. Find alternative?
-                    UCA0TXBUF = lp_spi_transmit[lp_spi_tx_offset - lp_spi_tx_count];
+                    UCA0TXBUF = spi_tx_buf[spi_tx_offset - spi_tx_count];
 
-                    lp_spi_tx_count--;
+                    spi_tx_count--;
                 }
                 else {
-                    lp_spi_mode = LP_SPI_IDLE_MODE;
+                    spi_mode = SPI_IDLE_MODE;
                     __bic_SR_register_on_exit(CPUOFF);
                 }
             }
             else
-            if (lp_spi_mode == LP_SPI_RX_DATA_MODE) {
-                if (lp_spi_rx_count > 0) {
-                    lp_spi_receive[lp_spi_rx_offset - lp_spi_rx_count] = uca0_rx_val;
-                    lp_spi_rx_count--;
+            if (spi_mode == SPI_RX_DATA_MODE) {
+                if (spi_rx_count > 0) {
+                    spi_rx_buf[spi_rx_offset - spi_rx_count] = uca0_spi_rx_val;
+                    spi_rx_count--;
                 }
 
-                if (lp_spi_rx_count == 0) {
-                    lp_spi_mode = LP_SPI_IDLE_MODE;
+                if (spi_rx_count == 0) {
+                    spi_mode = SPI_IDLE_MODE;
                     __bic_SR_register_on_exit(CPUOFF);  // Exit LPM0
                 }
                 else {
@@ -414,8 +431,6 @@ __interrupt void USCI_A0_ISR(void) {
 
             break;
         case USCI_SPI_UCTXIFG:
-            //UCA0TXBUF = TXData;                   // Transmit characters
-            //UCA0IE &= ~UCTXIE;
             break;
         default:
             break;
@@ -424,58 +439,57 @@ __interrupt void USCI_A0_ISR(void) {
 
 #pragma vector=USCI_B0_VECTOR
 __interrupt void USCI_B0_ISR(void) {
-    char val = 0;
+    uint8_t ucb0_i2c_rx_val = 0;
 
     switch(__even_in_range(UCB0IV, USCI_I2C_UCBIT9IFG)) {
         case USCI_I2C_UCSTPIFG:
+            if (i2c_stat == I2C_STAT_WRITE)
+                UCB0IE &= ~(UCNACKIE + UCTXIE + UCSTPIE);
+            else
+                UCB0IE &= ~(UCNACKIE + UCRXIE + UCSTPIE);
+
             __bic_SR_register_on_exit(CPUOFF);
             break;
         case USCI_I2C_UCNACKIFG:
-            __bic_SR_register_on_exit(CPUOFF);
-            break;
-        case USCI_I2C_UCRXIFG0:
-            val = UCB0RXBUF;
-
-            if (lp_i2c_rx_count > 0) {
-                lp_i2c_receive[lp_i2c_rx_offset - lp_i2c_rx_count] = val;
-                lp_i2c_rx_count--;
+            if (i2c_stat == I2C_STAT_WRITE ||
+               (i2c_stat == I2C_STAT_READ && i2c_rx_count != 0) ) {
+                UCB0CTLW0 |= UCTXSTP;
+                UCB0IE &= ~(UCNACKIE + UCTXIE);
             }
 
-            if (lp_i2c_rx_count == 1) {
+            break;
+        case USCI_I2C_UCRXIFG0:
+            ucb0_i2c_rx_val = UCB0RXBUF;
+
+            if (i2c_rx_count > 0) {
+                i2c_rx_buf[i2c_rx_offset - i2c_rx_count] = ucb0_i2c_rx_val;
+                i2c_rx_count--;
+            }
+
+            if (i2c_rx_count == 1) {
                 UCB0CTLW0 |= UCTXSTP;
             }
             else
-            if (lp_i2c_rx_count == 0) {
-                UCB0CTLW0 |=  UCTXSTP;
-                UCB0IE    &= ~UCRXIE;
-                UCB0IE    &= ~UCNACKIE;
-
+            if (i2c_rx_count == 0) {
+                UCB0IE &= ~(UCNACKIE + UCRXIE + UCSTPIE);
                 __bic_SR_register_on_exit(CPUOFF);
             }
 
             break;
         case USCI_I2C_UCTXIFG0:
-            if (lp_i2c_tx_count > 0) {
-                UCB0TXBUF = lp_i2c_transmit[lp_i2c_tx_offset - lp_i2c_tx_count];
-                lp_i2c_tx_count--;
+            if (i2c_tx_count > 0) {
+                UCB0TXBUF = i2c_tx_buf[i2c_tx_offset - i2c_tx_count];
+                i2c_tx_count--;
             }
             else
-            if (lp_i2c_tx_count == 0){
-                UCB0CTLW0  |=  UCTXSTP;     // Send stop condition
-                UCB0IE     &= ~UCTXIE;
-
-                __bic_SR_register_on_exit(CPUOFF);
+            if (i2c_tx_count == 0) {
+                UCB0CTLW0 |= UCTXSTP;
+                UCB0IE &= ~(UCNACKIE + UCTXIE);
             }
 
            break;
         default:
-            if (lp_i2c_tx_count != 0 || lp_i2c_rx_count != 0) {
-                UCB0CTLW0 |= UCTXSTP;
-            }
-
             __bic_SR_register_on_exit(CPUOFF);
             break;
     }
-
-    return;
 }
