@@ -47,14 +47,14 @@ void ccb_uc_adc_meas(void) {
     ADC12CTL0 |= ADC12SC;
 }
 
-#define UC_ADC_1    BIT0    // Port 3
-#define UC_ADC_2    BIT0    // Port 4
-#define UC_ADC_3    BIT1    // Port 4
-#define UC_ADC_4    BIT2    // Port 4
-#define UC_ADC_5    BIT3    // Port 4
+#define ADC_1    BIT0    // Port 3
+#define ADC_2    BIT0    // Port 4
+#define ADC_3    BIT1    // Port 4
+#define ADC_4    BIT2    // Port 4
+#define ADC_5    BIT3    // Port 4
 
 static inline
-void ccb_uc_adc_config(void) {
+void adc_config(void) {
     while ((REFCTL0 & REFGENBUSY) != 0)
         __no_operation();
 
@@ -101,35 +101,6 @@ void ccb_uc_adc_config(void) {
 }
 
 // Configure SPI
-
-#define LP_SPI_MOSI BIT0    // Port 2
-#define LP_SPI_MISO BIT1    // Port 2
-#define LP_SPI_CS   BIT4    // Port 1
-#define LP_SPI_SCLK BIT5    // Port 1
-
-static inline
-void lp_spi_config(void) {
-    // Chip select and the enable will be controlled by the MSP430.
-
-    P1DIR  |=  LP_SPI_CS;
-
-    // Initialize the serial communication here.
-
-    P1SEL0 &= ~LP_SPI_SCLK;
-    P1SEL1 |=  LP_SPI_SCLK;
-    P2SEL0 &= ~LP_SPI_MOSI;
-    P2SEL0 &= ~LP_SPI_MISO;
-    P2SEL1 |=  LP_SPI_MOSI | LP_SPI_MISO;
-
-    UCA0CTLW0  =  UCSWRST;
-    UCA0CTLW0 |=  UCMSB + UCSYNC + UCMST + UCCKPH + UCSSEL__SMCLK;
-    UCA0CTLW0 &= ~UCSWRST;
-    UCA0IE    |=  UCRXIE;
-
-    // Need to wait for LP_SPI to be configured.
-
-    __delay_cycles(10000);
-}
 
 #define SPI_MOSI        BIT0    // Port 2
 #define SPI_MISO        BIT1    // Port 2
