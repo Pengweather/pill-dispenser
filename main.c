@@ -43,7 +43,7 @@ void lp_clk_config(const bool use_output) {
 }
 
 static inline
-void ccb_uc_adc_meas(void) {
+void adc_meas(void) {
     ADC12CTL0 |= ADC12SC;
 }
 
@@ -62,11 +62,11 @@ void adc_config(void) {
 
     // First set the pins to the appropriate selected functionality.
 
-    P3SEL0 |=  UC_ADC_1;
-    P3SEL1 |=  UC_ADC_1;
+    P3SEL0 |=  ADC_1;
+    P3SEL1 |=  ADC_1;
 
-    P4SEL0 |=  UC_ADC_2 | UC_ADC_3 | UC_ADC_4 | UC_ADC_5;
-    P4SEL1 |=  UC_ADC_2 | UC_ADC_3 | UC_ADC_4 | UC_ADC_5;
+    P4SEL0 |=  ADC_2 | ADC_3 | ADC_4 | ADC_5;
+    P4SEL1 |=  ADC_2 | ADC_3 | ADC_4 | ADC_5;
 
     // Configure the ADC registers to permit a single-sampling and multiple acquisition.
     // We are relying on 8 ADC12CLK cycles for ADC12MEM0 to ADC12MEM7.
